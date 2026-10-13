@@ -1,0 +1,3 @@
+# A função é chamada pelo pg_cron com um segredo próprio (header x-cron-secret), por isso não exige JWT.
+[functions.lp-forms-crm]
+verify_jwt = false

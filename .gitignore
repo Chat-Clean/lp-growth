@@ -1,0 +1,15 @@
+# Ferramentas locais do assistente
+.claude/
+.agents/
+skills-lock.json
+
+# Sistema e editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
+.env
+.env.*
