@@ -4,8 +4,8 @@
 // Segredos da função (Supabase > Edge Functions > Secrets):
 //   CHATCLEAN_PUSH_URL  URL autenticada da API Push do canal, com o ?token=...  (obrigatório)
 //   MODO_TESTE          "false" liga o envio de template. Qualquer outro valor (ou ausente) = só nota interna.
-//   TEMPLATE_PARCIAL    hsmId do template para quem parou no meio
-//   TEMPLATE_COMPLETO   hsmId do template para quem preencheu tudo
+//   TEMPLATE_PARCIAL    hsmId do template para quem parou no meio (hoje: comercialretomada3, 2090372418499426)
+//   TEMPLATE_COMPLETO   hsmId do template para quem preencheu tudo (vazio = só nota interna)
 // SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY já existem em toda Edge Function.
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -14,6 +14,9 @@ const PUSH_URL = Deno.env.get("CHATCLEAN_PUSH_URL") ?? "";
 const MODO_TESTE = (Deno.env.get("MODO_TESTE") ?? "true").toLowerCase() !== "false";
 const TEMPLATE_PARCIAL = Deno.env.get("TEMPLATE_PARCIAL") ?? "";
 const TEMPLATE_COMPLETO = Deno.env.get("TEMPLATE_COMPLETO") ?? "";
+
+// {{2}} do comercialretomada3: "Olá, {{1}}. Notamos que seu atendimento com {{2}} ficou parado. Deseja continuar de onde parou?"
+const CONTEXTO_PARCIAL = "a ChatClean pelo formulário do site";
 
 const ATENDENTES: Record<string, string> = { "1": "Só eu", "2-5": "2 a 5", "6-10": "6 a 10", "11-20": "11 a 20", "21+": "Mais de 20" };
 const VOLUME: Record<string, string> = { ate_50: "Até 50", "50_100": "De 50 a 100", mais_100: "Mais de 100", nao_sei: "Não sei dizer" };
@@ -86,7 +89,7 @@ function montarEnvio(d: Lead) {
     payload.onlyNote = true;
   } else {
     payload.templateId = templateId;
-    payload.params = [primeiroNome];
+    payload.params = completo ? [primeiroNome] : [primeiroNome, CONTEXTO_PARCIAL];
   }
 
   return {

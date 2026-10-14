@@ -303,7 +303,7 @@
                                                             : 'Como automatizar parte do atendimento com chatbot e IA'].filter(Boolean);
     var msg = 'Olá! Acabei de preencher a análise de atendimento no site da ChatClean.\n\n' +
       'Nome: ' + lead.nome + '\nProtocolo: ' + lead.lead_id;
-    var wa = 'https://wa.me/' + C.whatsappNumber + '?text=' + encodeURIComponent(msg);
+    var wa = (C.whatsappLink || 'https://wa.me/' + C.whatsappNumber) + '?text=' + encodeURIComponent(msg);
 
     body.innerHTML = '<div class="step done">' +
       '<div class="check">' + CHECK + '</div>' +
