@@ -24,13 +24,13 @@
   }
 
   /* ---------------- Etapas ----------------
-     Ordem: contato primeiro (WhatsApp, nome), depois qualificação (tamanho, volume, segmento, dor) e e-mail opcional.
+     Ordem: contato primeiro (WhatsApp, nome, e-mail, todos obrigatórios) e depois qualificação (tamanho, volume, segmento, dor).
      Assim que o WhatsApp é informado o lead já existe como "parcial" e pode ser repescado pela automação.
      O id de cada etapa é também o nome do campo no lead enviado ao webhook. */
   var STEPS = [
     { id: 'whatsapp', type: 'input',
       title: 'Qual é o seu WhatsApp?',
-      hint: 'É por ele que o especialista envia a sua análise.',
+      hint: 'É por ele que o especialista completa o seu diagnóstico.',
       input: { type: 'tel', ac: 'tel-national', mode: 'numeric', ph: '(00) 00000-0000' },
       err: 'Informe um WhatsApp válido com DDD.', consent: true,
       ok: function (v) { var d = v.replace(/\D/g, ''); return (d.length === 10 || d.length === 11) && d[0] !== '0'; } },
@@ -39,12 +39,17 @@
       input: { type: 'text', ac: 'name', ph: 'Seu nome' },
       err: 'Informe o seu nome.',
       ok: function (v) { return v.length >= 2; } },
+    { id: 'email', type: 'input',
+      title: 'Qual é o seu melhor e-mail?',
+      input: { type: 'email', ac: 'email', mode: 'email', ph: 'voce@empresa.com.br' },
+      err: 'Informe um e-mail válido.',
+      ok: function (v) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v); } },
     { id: 'atendentes', type: 'single',
       title: 'Quantas pessoas atendem clientes na sua empresa hoje?',
       options: [['1', 'Só eu'], ['2-5', '2 a 5'], ['6-10', '6 a 10'], ['11-20', '11 a 20'], ['21+', 'Mais de 20']] },
     { id: 'volume_atendimentos', type: 'single',
       title: 'Em média, quantos atendimentos sua empresa recebe por dia?',
-      options: [['ate_50', 'Até 50'], ['50_100', 'De 50 a 100'], ['mais_100', 'Mais de 100'], ['nao_sei', 'Não sei dizer']] },
+      options: [['ate_50', 'Até 50'], ['50_100', 'De 50 a 100'], ['mais_100', 'Mais de 100'], ['nao_sei', 'Não consigo contar']] },
     { id: 'segmento', type: 'single',
       title: 'Qual é o segmento da sua empresa?',
       options: [['advocacia', 'Escritório de advocacia'], ['industria', 'Indústria'], ['varejo', 'Varejo / loja'],
@@ -55,22 +60,8 @@
                 ['demora_resposta', 'Minha equipe demora para responder'],
                 ['sem_acompanhamento', 'Não consigo acompanhar todos os atendimentos'],
                 ['falta_organizacao', 'Perco clientes por falta de organização'],
-                ['quero_automatizar', 'Quero automatizar parte do atendimento']] },
-    // Opcional e por último, para não travar a qualificação: pode ser pulado
-    { id: 'email', type: 'input', optional: true,
-      title: 'Quer receber a análise também por e-mail?',
-      hint: 'Opcional. Se preferir, pule esta etapa.',
-      input: { type: 'email', ac: 'email', mode: 'email', ph: 'voce@empresa.com.br' },
-      err: 'Informe um e-mail válido ou pule esta etapa.', cta: 'Ver minha análise',
-      ok: function (v) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v); } }
+                ['quero_automatizar', 'Quero automatizar parte do atendimento']] }
   ];
-  var DOR_FOCO = {
-    nao_sei_conversao: 'Como medir quantos contatos viram venda, por canal e por vendedor',
-    demora_resposta: 'Como reduzir o tempo de resposta da sua equipe',
-    sem_acompanhamento: 'Como acompanhar todos os atendimentos da equipe em tempo real',
-    falta_organizacao: 'Como organizar os contatos para não perder mais nenhum cliente',
-    quero_automatizar: 'Quais partes do seu atendimento já podem ser automatizadas'
-  };
 
   var state = { i: -1, resume: 0, started: false, submitted: false, partialSent: false, leadEventId: '',
                 answers: {}, stepStart: 0, formStart: 0, origin: '' };
@@ -222,7 +213,7 @@
     quiz.classList.add('is-done');
     $('#barFill').style.width = '100%';
     body.innerHTML = '<div class="step analyzing"><div class="spinner" aria-hidden="true"></div>' +
-      '<h2>Analisando suas respostas</h2><ul>' +
+      '<h2>Montando o seu diagnóstico</h2><ul>' +
       ['Tamanho da equipe e volume de atendimento', 'Perfil do seu segmento', 'Principal dor da operação']
         .map(function (t) { return '<li>' + CHECK + '<span>' + t + '</span></li>'; }).join('') + '</ul></div>';
     quiz.scrollTop = 0;
@@ -296,23 +287,18 @@
     quiz.classList.add('is-done');
     $('#barFill').style.width = '100%';
     $('#sticky').style.display = 'none';
-    var foco = DOR_FOCO[lead.principal_dor];
-    var itens = [foco, 'Como centralizar WhatsApp, Instagram, Facebook e Telegram em uma única tela',
-                 'Como ter toda a equipe no mesmo número, pela API Oficial do WhatsApp',
-                 lead.principal_dor === 'quero_automatizar' ? 'Como acompanhar cada atendente e cada conversa em tempo real'
-                                                            : 'Como automatizar parte do atendimento com chatbot e IA'].filter(Boolean);
-    var msg = 'Olá! Acabei de preencher a análise de atendimento no site da ChatClean.\n\n' +
-      'Nome: ' + lead.nome + '\nProtocolo: ' + lead.lead_id;
+    var first = lead.nome.split(/\s+/)[0];
+    first = first.charAt(0).toUpperCase() + first.slice(1);
+    var msg = 'Olá! Acabei de preencher o diagnóstico de atendimento no site da ChatClean.\n\n' +
+      'Nome: ' + lead.nome;
     var wa = (C.whatsappLink || 'https://wa.me/' + C.whatsappNumber) + '?text=' + encodeURIComponent(msg);
 
     body.innerHTML = '<div class="step done">' +
       '<div class="check">' + CHECK + '</div>' +
-      '<h2>Análise concluída, ' + escapeHtml(lead.nome.split(/\s+/)[0]) + '!</h2>' +
-      '<p>Recebemos suas respostas. O próximo passo é conversar com um especialista para entender a sua operação e mostrar como a ChatClean pode organizar o seu atendimento.</p>' +
-      '<div class="done-card"><h3>Fale com um especialista</h3><p>Nesta conversa você verá:</p><ul>' +
-      itens.map(function (t) { return '<li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>' + t + '</span></li>'; }).join('') +
-      '</ul>' +
-      '<a class="btn btn-block" id="waBtn" href="' + wa + '" target="_blank" rel="noopener">' + WHATS + 'Continuar no WhatsApp</a></div>' +
+      '<h2>Recebemos suas respostas, ' + escapeHtml(first) + '</h2>' +
+      '<p>Nosso time vai entrar em contato com o seu diagnóstico completo.</p>' +
+      '<div class="wa-box"><p>Se preferir, você já pode falar com a gente agora pelo WhatsApp.</p>' +
+      '<a class="btn btn-block" id="waBtn" href="' + wa + '" target="_blank" rel="noopener">' + WHATS + 'Falar agora no WhatsApp</a></div>' +
       '<p class="protocol">Protocolo ' + escapeHtml(lead.lead_id) + '</p></div>';
     quiz.scrollTop = 0;
 
