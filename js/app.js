@@ -24,7 +24,7 @@
   }
 
   /* ---------------- Etapas ----------------
-     Ordem: contato primeiro (WhatsApp, nome, e-mail, todos obrigatórios) e depois qualificação (tamanho, volume, segmento, dor).
+     Ordem: contato primeiro (WhatsApp, nome, empresa, e-mail, todos obrigatórios) e depois qualificação (tamanho, volume, segmento, dor).
      Assim que o WhatsApp é informado o lead já existe como "parcial" e pode ser repescado pela automação.
      O id de cada etapa é também o nome do campo no lead enviado ao webhook. */
   var STEPS = [
@@ -38,6 +38,11 @@
       title: 'Qual é o seu nome?',
       input: { type: 'text', ac: 'name', ph: 'Seu nome' },
       err: 'Informe o seu nome.',
+      ok: function (v) { return v.length >= 2; } },
+    { id: 'empresa', type: 'input',
+      title: 'Qual é o nome da sua empresa?',
+      input: { type: 'text', ac: 'organization', ph: 'Nome da empresa' },
+      err: 'Informe o nome da sua empresa.',
       ok: function (v) { return v.length >= 2; } },
     { id: 'email', type: 'input',
       title: 'Qual é o seu melhor e-mail?',
@@ -163,12 +168,20 @@
   /* ---------------- Lead: persistência e webhook ----------------
      A cada etapa concluída o lead é reenviado com o mesmo lead_id (o destino deve fazer upsert por lead_id).
      stage = 'partial' enquanto o formulário não terminou, 'complete' na última etapa. */
+  // A tabela lp_forms_leads ainda não tem coluna "empresa": até ela existir, a empresa vai junto do nome,
+  // que é atualizado a cada etapa e aparece na nota do CRM ("Nome: João Silva · Empresa: Loja X").
+  // O template de retomada usa só a primeira palavra do nome, então continua "Olá, João".
+  function dbLead(lead) {
+    if (!lead.empresa) return lead;
+    return Object.assign({}, lead, { nome: (lead.nome + ' · Empresa: ' + lead.empresa).slice(0, 120) });
+  }
+
   function saveLead(stage, lastStep) {
     var a = state.answers, meta = CC.metaIds();
     var lead = {
       lead_id: CC.leadId, stage: stage, last_step: lastStep, steps_total: STEPS.length,
       event_id: state.leadEventId, visitor_id: CC.visitorId, updated_at: new Date().toISOString(),
-      whatsapp: phoneE164(), nome: a.nome || '', email: (a.email || '').toLowerCase(), atendentes: a.atendentes || '',
+      whatsapp: phoneE164(), nome: a.nome || '', empresa: a.empresa || '', email: (a.email || '').toLowerCase(), atendentes: a.atendentes || '',
       volume_atendimentos: a.volume_atendimentos || '', segmento: a.segmento || '', principal_dor: a.principal_dor || '',
       attribution: CC.attr.session, first_touch: CC.attr.first,
       fbp: meta.fbp, fbc: meta.fbc, page_url: location.href, user_agent: navigator.userAgent
@@ -179,7 +192,7 @@
       fetch(C.supabaseUrl.replace(/\/+$/, '') + '/rest/v1/rpc/lp_forms_salvar_lead', {
         method: 'POST', keepalive: true,
         headers: { 'Content-Type': 'application/json', apikey: C.supabaseAnonKey, Authorization: 'Bearer ' + C.supabaseAnonKey },
-        body: JSON.stringify({ p_lead: lead })
+        body: JSON.stringify({ p_lead: dbLead(lead) })
       })
         .then(function (r) { track('lead_delivery', { delivery_target: 'supabase', lead_stage: stage, last_step: lastStep, delivery_status: r.ok ? 'success' : 'http_' + r.status }); })
         .catch(function () { track('lead_delivery', { delivery_target: 'supabase', lead_stage: stage, last_step: lastStep, delivery_status: 'network_error' }); });
@@ -290,7 +303,7 @@
     var first = lead.nome.split(/\s+/)[0];
     first = first.charAt(0).toUpperCase() + first.slice(1);
     var msg = 'Olá! Acabei de preencher o diagnóstico de atendimento no site da ChatClean.\n\n' +
-      'Nome: ' + lead.nome;
+      'Nome: ' + lead.nome + (lead.empresa ? '\nEmpresa: ' + lead.empresa : '');
     var wa = (C.whatsappLink || 'https://wa.me/' + C.whatsappNumber) + '?text=' + encodeURIComponent(msg);
 
     body.innerHTML = '<div class="step done">' +
