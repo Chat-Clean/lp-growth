@@ -1,13 +1,17 @@
-// LP Forms ChatClean: envia os leads do formulário para o CRM ChatClean (API Push) com nota interna.
+// LP Forms ChatClean: envia ao CRM ChatClean (API Push), com nota interna e etiqueta, os leads do formulário da LP
+// (lp_forms_leads) e os do formulário nativo da Meta (ig_forms_leads, gravados pela função ig-forms-webhook).
 // Chamada a cada minuto pelo pg_cron (ver migrations/20261008_lp_forms_cron.sql).
 //
 // Segredos da função (Supabase > Edge Functions > Secrets):
 //   CHATCLEAN_PUSH_URL  URL autenticada da API Push do canal, com o ?token=...  (obrigatório)
 //   MODO_TESTE          "false" liga o envio de template. Qualquer outro valor (ou ausente) = só nota interna.
 //   TEMPLATE_PARCIAL    hsmId do template para quem parou no meio (hoje: comercialretomada3, 2090372418499426)
-//   TEMPLATE_COMPLETO   hsmId do template para quem preencheu tudo (vazio = só nota interna)
+//   TEMPLATE_COMPLETO   hsmId do template para quem preencheu tudo (vazio = comercialretomada2, 1720828559338994)
 //   ETIQUETA_LP         nome da etiqueta aplicada ao contato no CRM (padrão: "Lead LP Forms"). Precisa existir na plataforma.
 //   ETIQUETA_LP_ID      id dessa etiqueta na plataforma (padrão: 1062). Usado só para conferir se ela ficou no contato.
+//   TEMPLATE_IG         hsmId do template para os leads do formulário da Meta (vazio = só nota interna)
+//   ETIQUETA_IG         nome da etiqueta dos leads do formulário da Meta (vazio = a fila de etiqueta deles espera)
+//   ETIQUETA_IG_ID      id dessa etiqueta na plataforma (opcional, só para conferência)
 // SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY já existem em toda Edge Function.
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -15,12 +19,30 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const PUSH_URL = Deno.env.get("CHATCLEAN_PUSH_URL") ?? "";
 const MODO_TESTE = (Deno.env.get("MODO_TESTE") ?? "true").toLowerCase() !== "false";
 const TEMPLATE_PARCIAL = Deno.env.get("TEMPLATE_PARCIAL") ?? "";
-const TEMPLATE_COMPLETO = Deno.env.get("TEMPLATE_COMPLETO") ?? "";
+// comercialretomada2 (Utilidade, canal ChatClean Oficial). O segredo TEMPLATE_COMPLETO, se preenchido, troca o template.
+const TEMPLATE_COMPLETO = (Deno.env.get("TEMPLATE_COMPLETO") ?? "").trim() || "1720828559338994";
 const ETIQUETA_LP = (Deno.env.get("ETIQUETA_LP") ?? "").trim() || "Lead LP Forms";
 const ETIQUETA_LP_ID = (Deno.env.get("ETIQUETA_LP_ID") ?? "").trim() || "1062";
+const TEMPLATE_IG = (Deno.env.get("TEMPLATE_IG") ?? "").trim();
+const ETIQUETA_IG = (Deno.env.get("ETIQUETA_IG") ?? "").trim();
+const ETIQUETA_IG_ID = (Deno.env.get("ETIQUETA_IG_ID") ?? "").trim();
+
+type Etiqueta = { nome: string; id: string };
+const ETQ_LP: Etiqueta = { nome: ETIQUETA_LP, id: ETIQUETA_LP_ID };
+const ETQ_IG: Etiqueta = { nome: ETIQUETA_IG, id: ETIQUETA_IG_ID };
 
 // {{2}} do comercialretomada3: "Olá, {{1}}. Notamos que seu atendimento com {{2}} ficou parado. Deseja continuar de onde parou?"
 const CONTEXTO_PARCIAL = "a ChatClean pelo formulário do site";
+
+// comercialretomada2: "Olá {{1}}, Sua solicitação sobre {{2}}, feita em {{3}}, ainda está aguardando retorno.
+// Nosso time está disponível para continuar o atendimento quando você quiser." (botão de resposta rápida "Continuar")
+const CONTEXTO_COMPLETO = "a ChatClean pelo formulário do site";
+
+// Data do envio do formulário (dd/mm), no horário de Fortaleza, para o {{3}} do comercialretomada2.
+function dataDoFormulario(d: Lead): string {
+  const quando = new Date(d.completed_at ?? d.created_at ?? Date.now());
+  return quando.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "America/Fortaleza" });
+}
 
 const ATENDENTES: Record<string, string> = { "1": "Só eu", "2-5": "2 a 5", "6-10": "6 a 10", "11-20": "11 a 20", "21+": "Mais de 20" };
 const VOLUME: Record<string, string> = { ate_50: "Até 50", "50_100": "De 50 a 100", mais_100: "Mais de 100", nao_sei: "Não consigo contar" };
@@ -93,7 +115,9 @@ function montarEnvio(d: Lead) {
     payload.onlyNote = true;
   } else {
     payload.templateId = templateId;
-    payload.params = completo ? [primeiroNome] : [primeiroNome, CONTEXTO_PARCIAL];
+    payload.params = completo
+      ? [primeiroNome, CONTEXTO_COMPLETO, dataDoFormulario(d)]
+      : [primeiroNome, CONTEXTO_PARCIAL];
   }
 
   return {
@@ -104,12 +128,14 @@ function montarEnvio(d: Lead) {
   };
 }
 
-async function atualizarLead(leadId: string, campos: Record<string, unknown>) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/lp_forms_leads?lead_id=eq.${encodeURIComponent(leadId)}`, {
+async function atualizar(tabela: string, chave: string, id: string, campos: Record<string, unknown>) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${tabela}?${chave}=eq.${encodeURIComponent(id)}`, {
     method: "PATCH", headers: { ...dbHeaders, Prefer: "return=minimal" }, body: JSON.stringify(campos),
   });
-  if (!r.ok) console.error("falha ao atualizar lead", leadId, r.status, await r.text());
+  if (!r.ok) console.error("falha ao atualizar", tabela, id, r.status, await r.text());
 }
+const atualizarLead = (leadId: string, campos: Record<string, unknown>) => atualizar("lp_forms_leads", "lead_id", leadId, campos);
+const atualizarIg = (leadgenId: string, campos: Record<string, unknown>) => atualizar("ig_forms_leads", "leadgen_id", leadgenId, campos);
 
 // Etiqueta o contato no CRM pela API de Contatos (mesmo servidor e token da URL do Push).
 // As rotas /v1/contacts exigem o token no header Bearer; ?token= só funciona na rota do Push.
@@ -123,17 +149,18 @@ const idNoPush = (j: any) => idValido(j?.contact?.id ?? j?.data?.contact?.id);
 // deno-lint-ignore no-explicit-any
 const idNaBusca = (j: any) => idValido(j?.id ?? j?.data?.id);
 // deno-lint-ignore no-explicit-any
-function temEtiqueta(tags: any[]): boolean {
-  const alvo = ETIQUETA_LP.toLowerCase();
+function temEtiqueta(tags: any[], etq: Etiqueta): boolean {
+  const alvo = etq.nome.toLowerCase();
+  const id = etq.id || "-";
   return tags.some((t) => {
-    if (typeof t === "number") return String(t) === ETIQUETA_LP_ID;
-    if (typeof t === "string") return t.toLowerCase() === alvo || t === ETIQUETA_LP_ID;
-    return String(t?.id ?? t?.tagId ?? "") === ETIQUETA_LP_ID ||
+    if (typeof t === "number") return String(t) === id;
+    if (typeof t === "string") return t.toLowerCase() === alvo || t === id;
+    return String(t?.id ?? t?.tagId ?? "") === id ||
       (t?.tag ?? t?.title ?? t?.name ?? "").toString().toLowerCase() === alvo;
   });
 }
 
-async function etiquetar(number: string, respostaPush: unknown) {
+async function etiquetar(number: string, respostaPush: unknown, etq: Etiqueta) {
   const url = new URL(PUSH_URL);
   const token = url.searchParams.get("token") ?? "";
   if (!token) throw new Error("token ausente na CHATCLEAN_PUSH_URL");
@@ -157,26 +184,26 @@ async function etiquetar(number: string, respostaPush: unknown) {
   if (!contactId) throw new Error(`contato não encontrado pelo número (com e sem o 9): ${ultimaResposta.slice(0, 120) || "(resposta vazia)"}`);
 
   const r = await fetch(`${base}/${contactId}`, {
-    method: "PATCH", headers, body: JSON.stringify({ tags: [ETIQUETA_LP] }), signal: AbortSignal.timeout(10000),
+    method: "PATCH", headers, body: JSON.stringify({ tags: [etq.nome] }), signal: AbortSignal.timeout(10000),
   });
   const texto = await r.text();
   if (!r.ok) throw new Error(`etiqueta respondeu ${r.status}: ${texto.slice(0, 200)}`);
   // Se a resposta trouxer as etiquetas e a nossa não estiver lá, o PATCH não aplicou (nome diferente do cadastrado?).
   let tags: unknown = null;
   try { const j = JSON.parse(texto); tags = j?.tags ?? j?.data?.tags; } catch { /* resposta sem JSON */ }
-  if (Array.isArray(tags) && !temEtiqueta(tags)) throw new Error(`etiqueta "${ETIQUETA_LP}" não ficou no contato ${contactId}`);
+  if (Array.isArray(tags) && !temEtiqueta(tags, etq)) throw new Error(`etiqueta "${etq.nome}" não ficou no contato ${contactId}`);
 }
 
 // Tenta etiquetar e devolve as colunas de controle da etiqueta para gravar no lead.
 // contarTentativa = false no envio: a view de pendentes não traz crm_etiqueta_tentativas, então quem conta é só a fila de etiqueta.
-async function tentarEtiqueta(d: Lead, respostaPush: unknown, contarTentativa = true): Promise<Record<string, unknown>> {
+async function tentarEtiqueta(d: Lead, respostaPush: unknown, contarTentativa = true, etq: Etiqueta = ETQ_LP): Promise<Record<string, unknown>> {
   const number = (d.whatsapp ?? "").toString().replace(/\D/g, "");
   try {
-    await etiquetar(number, respostaPush);
+    await etiquetar(number, respostaPush, etq);
     return { crm_etiqueta_at: new Date().toISOString(), crm_etiqueta_erro: null };
   } catch (e) {
     const erro = (e instanceof Error ? e.message : String(e)).slice(0, 500);
-    console.error("etiqueta", d.lead_id, erro);
+    console.error("etiqueta", d.lead_id ?? d.leadgen_id, erro);
     return contarTentativa
       ? { crm_etiqueta_tentativas: (d.crm_etiqueta_tentativas ?? 0) + 1, crm_etiqueta_erro: erro }
       : { crm_etiqueta_erro: erro };
@@ -216,6 +243,91 @@ async function processarEtiqueta(d: Lead) {
   return { lead_id: d.lead_id, etiqueta: campos.crm_etiqueta_erro ?? "ok" };
 }
 
+/* ---------------- Formulário nativo da Meta (ig_forms_leads) ----------------
+   Só chega lead completo (a Meta não entrega quem abandonou), então é um envio por lead, como o "completo" da LP. */
+
+// Campos padrão de contato da Meta, mostrados separados no topo da nota.
+const CAMPOS_CONTATO = new Set(["full_name", "first_name", "last_name", "phone_number", "email"]);
+
+// Os nomes de campo da Meta vêm como slug ("quantas_pessoas_atendem?"): deixa legível na nota.
+function pergunta(k: string): string {
+  const t = k.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function montarEnvioIg(d: Lead) {
+  const number = (d.whatsapp ?? "").toString().replace(/\D/g, "");
+  const respostas: Record<string, string> = d.respostas ?? {};
+  const origem = [d.campanha_nome, d.adset_nome, d.ad_nome].filter(Boolean).join(" / ") || "(sem anúncio: orgânico ou teste)";
+  const plataforma = ({ ig: "Instagram", fb: "Facebook" } as Record<string, string>)[d.plataforma ?? ""] ?? (d.plataforma || "Instagram/Facebook");
+
+  const nota = [
+    "LEAD DO FORMULÁRIO DA META - " + plataforma,
+    "",
+    "WhatsApp: " + number,
+    "Nome: " + txt(d.nome),
+    "E-mail: " + txt(d.email),
+    "",
+    "Respostas:",
+    ...Object.entries(respostas)
+      .filter(([k]) => !CAMPOS_CONTATO.has(k.toLowerCase())) // já estão no topo da nota
+      .map(([k, v]) => `- ${pergunta(k)}: ${txt(v)}`),
+    "",
+    "Formulário: " + txt(d.form_nome ?? d.form_id),
+    "Origem: " + origem,
+    "ID do lead na Meta: " + d.leadgen_id,
+  ].join("\n").slice(0, 4000);
+
+  const somenteNota = MODO_TESTE || !TEMPLATE_IG;
+  const primeiroNome = (d.nome ?? "").toString().trim().split(/\s+/)[0] || "tudo bem";
+  // deno-lint-ignore no-explicit-any
+  const payload: Record<string, any> = { number, externalKey: `igforms-${d.leadgen_id}`, note: { body: nota } };
+  if (somenteNota) {
+    payload.body = "Lead do formulário da Meta";
+    payload.onlyNote = true;
+  } else {
+    payload.templateId = TEMPLATE_IG;
+    payload.params = [primeiroNome];
+  }
+  return { numeroValido: /^55\d{10,11}$/.test(number), modo: somenteNota ? "somente_nota" : "template", payload };
+}
+
+async function processarIg(d: Lead) {
+  const envio = montarEnvioIg(d);
+  try {
+    if (!envio.numeroValido) throw new Error("lead sem WhatsApp no formato 55 + DDD + número (o formulário pede telefone?)");
+    const r = await fetch(PUSH_URL, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(envio.payload), signal: AbortSignal.timeout(15000),
+    });
+    const resposta = await r.text();
+    if (!r.ok) throw new Error(`CRM respondeu ${r.status}: ${resposta.slice(0, 300)}`);
+
+    let json: unknown = null;
+    try { json = JSON.parse(resposta); } catch { /* sem JSON: a etiqueta busca o contato pelo número */ }
+    // Sem ETIQUETA_IG configurada a etiqueta fica para a fila (ig_forms_leads_etiquetar), sem gastar tentativa.
+    const etiqueta = ETIQUETA_IG ? await tentarEtiqueta(d, json, true, ETQ_IG) : {};
+    await atualizarIg(d.leadgen_id, { crm_sent_at: new Date().toISOString(), crm_last_error: null, ...etiqueta });
+    return { leadgen_id: d.leadgen_id, modo: envio.modo, ok: true, etiqueta: ETIQUETA_IG ? (etiqueta.crm_etiqueta_erro ?? "ok") : "aguardando ETIQUETA_IG" };
+  } catch (e) {
+    const erro = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    await atualizarIg(d.leadgen_id, { crm_attempts: (d.crm_attempts ?? 0) + 1, crm_last_error: erro });
+    return { leadgen_id: d.leadgen_id, modo: envio.modo, ok: false, erro };
+  }
+}
+
+async function processarEtiquetaIg(d: Lead) {
+  const campos = await tentarEtiqueta(d, null, true, ETQ_IG);
+  await atualizarIg(d.leadgen_id, campos);
+  return { leadgen_id: d.leadgen_id, etiqueta: campos.crm_etiqueta_erro ?? "ok" };
+}
+
+async function lerFila(view: string): Promise<Lead[]> {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${view}?select=*&limit=20`, { headers: dbHeaders });
+  if (!r.ok) { console.error("falha ao ler", view, r.status, await r.text()); return []; }
+  return await r.json();
+}
+
 // O segredo do agendamento é gerado e guardado no Vault do banco; a conferência é feita lá (lp_forms_cron_autorizado).
 async function autorizado(req: Request): Promise<boolean> {
   const segredo = req.headers.get("x-cron-secret") ?? "";
@@ -241,5 +353,10 @@ Deno.serve(async (req) => {
   const pendentes: Lead[] = await r.json();
 
   const resultados = await Promise.all(pendentes.map(processar));
-  return Response.json({ modo_teste: MODO_TESTE, processados: resultados.length, resultados, etiquetas });
+
+  // Formulário nativo da Meta: mesma ordem (etiqueta antes do envio). Falha aqui não afeta os leads da LP.
+  const etiquetasIg = ETIQUETA_IG ? await Promise.all((await lerFila("ig_forms_leads_etiquetar")).map(processarEtiquetaIg)) : [];
+  const resultadosIg = await Promise.all((await lerFila("ig_forms_leads_pendentes")).map(processarIg));
+
+  return Response.json({ modo_teste: MODO_TESTE, processados: resultados.length, resultados, etiquetas, meta: { resultados: resultadosIg, etiquetas: etiquetasIg } });
 });
